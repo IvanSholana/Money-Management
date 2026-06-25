@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Money Management</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Local finance cockpit</p>
+      <h1>Money Management</h1>
+    </div>
+    <form class="month-picker" method="get" action="/">
+      <label for="month">Bulan</label>
+      <input id="month" type="month" name="month" value="{{ selected_month }}">
+      <button type="submit">Lihat</button>
+    </form>
+  </header>
+
+  <main>
+    <section class="metrics">
+      <article>
+        <span>Pemasukan</span>
+        <strong>{{ income|money }}</strong>
+      </article>
+      <article>
+        <span>Pengeluaran</span>
+        <strong>{{ expenses|money }}</strong>
+      </article>
+      <article>
+        <span>Cashflow</span>
+        <strong class="{{ 'positive' if cashflow >= 0 else 'negative' }}">{{ cashflow|money }}</strong>
+      </article>
+      <article>
+        <span>Total Aset</span>
+        <strong>{{ total_assets|money }}</strong>
+      </article>
+      <article>
+        <span>Sisa Budget</span>
+        <strong class="{{ 'positive' if remaining_budget >= 0 else 'negative' }}">{{ remaining_budget|money }}</strong>
+      </article>
+      <article>
+        <span>Progress Freedom</span>
+        <strong>{{ "%.1f"|format(freedom_progress) }}%</strong>
+      </article>
+    </section>
+
+    <section class="workspace">
+      <div class="panel wide">
+        <div class="panel-header">
+          <h2>Visualisasi</h2>
+        </div>
+        <div class="charts">
+          <div>
+            <h3>Pengeluaran per Kategori</h3>
+            <canvas id="expenseChart" height="240"></canvas>
+          </div>
+          <div>
+            <h3>Budget vs Realisasi</h3>
+            <canvas id="budgetChart" height="240"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Tambah Transaksi</h2>
+        </div>
+        <form class="stack" method="post" action="/transactions">
+          <input type="date" name="txn_date" value="{{ today }}" required>
+          <select name="type" required>
+            <option value="expense">Pengeluaran</option>
+            <option value="income">Pemasukan</option>
+          </select>
+          <input name="category" placeholder="Kategori" required>
+          <input name="description" placeholder="Deskripsi">
+          <input type="number" min="0" step="1000" name="amount" placeholder="Nominal" required>
+          <button type="submit">Simpan Transaksi</button>
+        </form>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Anggaran Bulanan</h2>
+        </div>
+        <form class="stack" method="post" action="/budgets">
+          <input type="hidden" name="month" value="{{ selected_month }}">
+          <input name="category" placeholder="Kategori" required>
+          <input type="number" min="0" step="1000" name="amount" placeholder="Budget" required>
+          <button type="submit">Set Budget</button>
+        </form>
+        <div class="list">
+          {% for row in budget_rows %}
+          <div class="list-row">
+            <div>
+              <strong>{{ row.category }}</strong>
+              <span>{{ row.spent|money }} / {{ row.budget|money }}</span>
+            </div>
+            <form method="post" action="/delete/monthly_budgets/{{ row.id }}">
+              <input type="hidden" name="month" value="{{ selected_month }}">
+              <button class="icon-button" title="Hapus">x</button>
+            </form>
+          </div>
+          {% else %}
+          <p class="empty">Belum ada budget untuk bulan ini.</p>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Aset</h2>
+        </div>
+        <form class="stack" method="post" action="/assets">
+          <input type="hidden" name="month" value="{{ selected_month }}">
+          <input name="name" placeholder="Nama aset" required>
+          <input name="type" placeholder="Jenis aset" required>
+          <input type="number" min="0" step="1000" name="value" placeholder="Nilai saat ini" required>
+          <button type="submit">Tambah Aset</button>
+        </form>
+        <div class="list">
+          {% for asset in assets %}
+          <div class="list-row">
+            <div>
+              <strong>{{ asset.name }}</strong>
+              <span>{{ asset.type }} · {{ asset.value|money }}</span>
+            </div>
+            <form method="post" action="/delete/assets/{{ asset.id }}">
+              <input type="hidden" name="month" value="{{ selected_month }}">
+              <button class="icon-button" title="Hapus">x</button>
+            </form>
+          </div>
+          {% else %}
+          <p class="empty">Belum ada aset.</p>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Target Freedom</h2>
+        </div>
+        <form class="stack" method="post" action="/goals">
+          <input type="hidden" name="month" value="{{ selected_month }}">
+          <input name="name" placeholder="Nama target" required>
+          <input type="number" min="1" step="1000" name="target_amount" placeholder="Target nominal" required>
+          <input type="number" min="0" step="1000" name="current_amount" placeholder="Nominal saat ini">
+          <input type="date" name="target_date">
+          <textarea name="notes" placeholder="Catatan"></textarea>
+          <button type="submit">Tambah Target</button>
+        </form>
+        <div class="list">
+          {% for goal in goals %}
+          {% set pct = (goal.current_amount / goal.target_amount * 100) if goal.target_amount else 0 %}
+          <div class="goal">
+            <div class="list-row">
+              <div>
+                <strong>{{ goal.name }}</strong>
+                <span>{{ goal.current_amount|money }} / {{ goal.target_amount|money }}</span>
+              </div>
+              <form method="post" action="/delete/goals/{{ goal.id }}">
+                <input type="hidden" name="month" value="{{ selected_month }}">
+                <button class="icon-button" title="Hapus">x</button>
+              </form>
+            </div>
+            <div class="progress"><span style="width: {{ [pct, 100]|min }}%"></span></div>
+          </div>
+          {% else %}
+          <p class="empty">Belum ada target.</p>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="panel wide">
+        <div class="panel-header">
+          <h2>Transaksi Terbaru</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Tanggal</th>
+                <th>Tipe</th>
+                <th>Kategori</th>
+                <th>Deskripsi</th>
+                <th>Nominal</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for txn in recent_transactions %}
+              <tr>
+                <td>{{ txn.txn_date }}</td>
+                <td>{{ "Masuk" if txn.type == "income" else "Keluar" }}</td>
+                <td>{{ txn.category }}</td>
+                <td>{{ txn.description }}</td>
+                <td>{{ txn.amount|money }}</td>
+                <td>
+                  <form method="post" action="/delete/transactions/{{ txn.id }}">
+                    <input type="hidden" name="month" value="{{ selected_month }}">
+                    <button class="icon-button" title="Hapus">x</button>
+                  </form>
+                </td>
+              </tr>
+              {% else %}
+              <tr><td colspan="6" class="empty">Belum ada transaksi.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    window.dashboardData = {{ chart_data|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
