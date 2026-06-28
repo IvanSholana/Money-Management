@@ -267,9 +267,9 @@ export function Thesis({ assets, theses, onThesesChange, settings }: ThesisProps
         <motion.section 
           initial={{ opacity: 0, y: -15 }}
           animate={{ opacity: 1, y: 0 }}
-          className="hero-card flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"
+          className="hero-card flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between"
         >
-          <div>
+          <div className="flex-1 min-w-0 max-w-2xl">
             <p className="text-xs font-black uppercase tracking-wider text-teal">Investment thinking tool</p>
             <h2 className="section-title text-xl font-black text-navy mt-0.5"><HelpLabel label="Tesis Saham" /></h2>
             <p className="text-sm text-slate-500 mt-1">
@@ -464,7 +464,7 @@ function ThesisDashboard({
             {needsAttention.slice(0, 6).map((thesis) => (
               <button
                 key={thesis.id}
-                className="rounded-2xl border border-amber-200/60 dark:border-amber-500/20 bg-gradient-to-br from-amber-50/60 to-amber-50/30 dark:from-amber-950/20 dark:to-amber-950/5 p-4 text-left hover:shadow-md hover:border-amber-300 dark:hover:border-amber-500/30 transition-all duration-200 focus:outline-none flex flex-col justify-between relative overflow-hidden group"
+                className="w-full whitespace-normal rounded-2xl border border-amber-200/60 dark:border-amber-500/20 bg-gradient-to-br from-amber-50/60 to-amber-50/30 dark:from-amber-950/20 dark:to-amber-950/5 p-4 text-left hover:shadow-md hover:border-amber-300 dark:hover:border-amber-500/30 transition-all duration-200 focus:outline-none flex flex-col justify-between relative overflow-hidden group"
                 type="button"
                 onClick={() => onView(thesis)}
               >
@@ -499,7 +499,7 @@ function ThesisList({
 }) {
   return (
     <section className="panel bg-white/95">
-      <div className="mb-4 grid gap-3 lg:grid-cols-[1fr_auto] lg:items-end border-b border-slate-100 pb-4">
+      <div className="mb-4 grid gap-3 xl:grid-cols-[1fr_auto] xl:items-end border-b border-slate-100 pb-4">
         <h3 className="section-title text-base font-extrabold text-navy"><HelpLabel label="Daftar Tesis" /></h3>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5 w-full lg:max-w-4xl">
           <SelectFilter label="Status" value={filters.status} options={["All", ...thesisStatuses]} onChange={(status) => onFilterChange({ ...filters, status })} />

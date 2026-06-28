@@ -4,3 +4,4 @@ pandas>=1.4.0
 scikit-learn>=1.0.0
 kneed>=0.7.0
 yfinance>=1.4.1
+playwright>=1.40.0

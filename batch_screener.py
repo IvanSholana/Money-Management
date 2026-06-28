@@ -264,7 +264,9 @@ def _entry_and_exit_plan(
 
 
 def _failed_result(ticker: str, reason: str) -> dict[str, Any]:
+    import uuid
     return {
+        "candidate_id": str(uuid.uuid4()),
         "ticker": ticker,
         "as_of_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "screening_status": "rejected",
@@ -307,6 +309,16 @@ def _failed_result(ticker: str, reason: str) -> dict[str, Any]:
         "ai_risk_note": None,
         "ai_entry_comment": None,
         "ai_exit_comment": None,
+        "news_search_status": "skipped",
+        "news_catalyst_summary": "",
+        "news_risk_summary": "",
+        "news_source_quality": "none",
+        "news_sources": [],
+        "catalyst_flags": [],
+        "risk_flags": [],
+        "ai_final_signal_with_news": None,
+        "ai_news_review_reason": "",
+        "news_review_warnings": [],
         "warnings": [reason],
     }
 
@@ -461,7 +473,9 @@ def screen_ticker(
             "passed" if final_signal == "BUY" else "warning"
         )
 
+        import uuid
         result = {
+            "candidate_id": str(uuid.uuid4()),
             "ticker": ticker,
             "as_of_date": str(quant.get("as_of_date")),
             "screening_status": screening_status,
@@ -505,6 +519,16 @@ def screen_ticker(
             "ai_risk_note": None,
             "ai_entry_comment": None,
             "ai_exit_comment": None,
+            "news_search_status": "skipped",
+            "news_catalyst_summary": "",
+            "news_risk_summary": "",
+            "news_source_quality": "none",
+            "news_sources": [],
+            "catalyst_flags": [],
+            "risk_flags": [],
+            "ai_final_signal_with_news": None,
+            "ai_news_review_reason": "",
+            "news_review_warnings": [],
             "warnings": warnings,
             "cache_status": "miss",
         }
@@ -581,6 +605,11 @@ def screen_batch(
     max_candidates_for_ai: int = 10,
     time_stop_days: int = DEFAULT_TIME_STOP_DAYS,
     ai_reviewer: AiReviewer | None = None,
+    use_news_search: bool = False,
+    max_news_candidates: int = 5,
+    news_days_back: int = 30,
+    force_news_refresh: bool = False,
+    deepseek_api_keys: list[str] | None = None,
 ) -> dict[str, Any]:
     parsed_tickers = parse_tickers(tickers)
     top_n = max(1, min(int(top_n), 50))
@@ -615,6 +644,63 @@ def screen_batch(
         if use_ai_review
         else 0
     )
+
+    # News & Catalyst Review Layer
+    if use_news_search and deepseek_api_keys:
+        try:
+            import news_catalyst_service
+            import deepseek_catalyst_reviewer
+            
+            # Select eligible candidates for news search (BUY/WATCH, not rejected)
+            news_eligible = [
+                cand for cand in top_candidates
+                if cand["quant_signal"] in ("BUY", "WATCH") and cand["screening_status"] != "rejected"
+            ][:max_news_candidates]
+            
+            for candidate in news_eligible:
+                ticker = candidate["ticker"]
+                company_name = candidate.get("name")
+                
+                # Fetch news catalyst source pack
+                res = news_catalyst_service.get_news_catalyst_source_pack(
+                    ticker=ticker,
+                    company_name=company_name,
+                    days_back=news_days_back,
+                    force_refresh=force_news_refresh
+                )
+                
+                source_pack = res.get("source_pack", {})
+                catalyst_analysis = res.get("catalyst_analysis", {})
+                
+                # Run DeepSeek risk reviewer
+                review_data = deepseek_catalyst_reviewer.review_candidate_with_news(
+                    candidate=candidate,
+                    source_pack=source_pack,
+                    catalyst_analysis=catalyst_analysis,
+                    api_keys=deepseek_api_keys
+                )
+                
+                # Enrich candidate dict
+                candidate["news_search_status"] = source_pack.get("search_status", "disabled")
+                candidate["news_catalyst_summary"] = review_data.get("news_catalyst_summary", "")
+                candidate["news_risk_summary"] = review_data.get("risk_summary", "")
+                candidate["news_source_quality"] = review_data.get("source_quality", "none")
+                candidate["news_sources"] = review_data.get("supporting_sources", [])
+                candidate["catalyst_flags"] = review_data.get("catalyst_flags", [])
+                candidate["risk_flags"] = review_data.get("risk_flags", [])
+                candidate["ai_final_signal_with_news"] = review_data.get("ai_final_signal", candidate["quant_signal"])
+                candidate["ai_news_review_reason"] = review_data.get("decision_reason", "")
+                candidate["news_review_warnings"] = catalyst_analysis.get("warnings", [])
+                
+                # Apply downgrade logic
+                ai_sig = review_data.get("ai_final_signal", candidate["quant_signal"])
+                if ai_sig != candidate["quant_signal"]:
+                    candidate["screening_status"] = "warning"
+                    candidate["warnings"].append(
+                        f"AI News reviewer men-downgrade signal {candidate['quant_signal']} menjadi {ai_sig}: {review_data.get('downgrade_reason')}"
+                    )
+        except Exception as e:
+            print(f"Error executing news search review for batch: {e}")
     rejected = [result for result in results if result["screening_status"] == "rejected"]
 
     signal_counts = {
@@ -641,3 +727,18 @@ def screen_batch(
         "rejected_candidates": rejected,
         "all_results": results,
     }
+
+
+def find_candidate_by_id(candidate_id: str) -> dict[str, Any] | None:
+    """
+    Searches the screening_cache memory to find the candidate with matching candidate_id.
+    """
+    if not candidate_id:
+        return None
+    with screening_cache._lock:
+        for stored_at, value in list(screening_cache._items.values()):
+            if isinstance(value, dict) and value.get("candidate_id") == candidate_id:
+                # Check expiration
+                if time.time() - stored_at <= screening_cache.ttl_seconds:
+                    return copy.deepcopy(value)
+    return None

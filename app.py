@@ -22,6 +22,19 @@ import backtest
 import batch_screener
 import fundamental_service
 import signal_engine
+import dividend_database
+import dividend_auto_collector
+import dividend_screener
+import dividend_event_backtest
+import news_catalyst_service
+import deepseek_catalyst_reviewer
+import orderbook_database
+import orderbook_schema
+import orderbook_execution_engine
+import stockbit_orderbook_parser
+import stockbit_orderbook_reader
+
+
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -110,6 +123,8 @@ def init_db() -> None:
         """
     )
     fundamental_service.init_fundamental_cache(db)
+    dividend_database.init_dividend_db(db)
+    orderbook_database.init_orderbook_db(db)
     db.commit()
 
 
@@ -122,7 +137,7 @@ def ensure_database() -> None:
 def add_local_api_headers(response: Response) -> Response:
     response.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    response.headers["Access-Control-Allow-Methods"] = "GET, PUT, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, PUT, POST, PATCH, DELETE, OPTIONS"
     return response
 
 
@@ -1214,6 +1229,11 @@ def screen_batch_quotes() -> tuple[Any, int] | Response:
         max_candidates_for_ai=payload.get("max_candidates_for_ai", 10),
         time_stop_days=payload.get("time_stop_days", 30),
         ai_reviewer=ai_reviewer,
+        use_news_search=bool(payload.get("use_news_search", False)),
+        max_news_candidates=payload.get("max_news_candidates", 5),
+        news_days_back=payload.get("news_days_back", 30),
+        force_news_refresh=bool(payload.get("force_news_refresh", False)),
+        deepseek_api_keys=api_keys,
     )
     return jsonify(result), 200
 
@@ -1702,6 +1722,498 @@ def ai_chat() -> tuple[Any, int]:
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ==============================================================================
+# DIVIDEND AUTO COLLECTOR & MOMENTUM SCANNER ENDPOINTS
+# ==============================================================================
+
+@app.route("/api/dividend/auto-collect", methods=["POST", "OPTIONS"])
+def api_dividend_auto_collect() -> tuple[Any, int] | Response:
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        req_data = request.get_json(silent=True) or {}
+        source = req_data.get("source", "all")
+        from_date = req_data.get("from_date")
+        to_date = req_data.get("to_date")
+        force_refresh = req_data.get("force_refresh", False)
+        
+        result = dividend_auto_collector.collect_dividend_events(
+            source=source,
+            from_date=from_date,
+            to_date=to_date,
+            force_refresh=force_refresh
+        )
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+
+@app.route("/api/dividend/scan-auto", methods=["POST", "OPTIONS"])
+def api_dividend_scan_auto() -> tuple[Any, int] | Response:
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        req_data = request.get_json(silent=True) or {}
+        result = dividend_screener.scan_dividend_candidates(req_data)
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+
+@app.get("/api/dividend/events")
+def api_dividend_get_events() -> tuple[Any, int]:
+    ticker = request.args.get("ticker")
+    active_only = request.args.get("active_only", "false").strip().lower() == "true"
+    verification_status = request.args.get("verification_status")
+    source_name = request.args.get("source_name")
+    
+    conn = dividend_database.get_connection()
+    try:
+        if active_only:
+            events = dividend_database.get_active_dividend_events(conn)
+        else:
+            events = dividend_database.get_all_dividend_events(conn)
+            
+        # Apply filters
+        filtered = []
+        for ev in events:
+            if ticker and ev.ticker.upper() != ticker.strip().upper():
+                continue
+            if verification_status and ev.verification_status != verification_status:
+                continue
+            if source_name and ev.source_name != source_name:
+                continue
+            filtered.append(ev.to_dict())
+            
+        return jsonify({"status": "success", "events": filtered}), 200
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route("/api/dividend/events/<event_id>", methods=["PATCH", "OPTIONS"])
+def api_dividend_update_event(event_id: str) -> tuple[Any, int] | Response:
+    if request.method == "OPTIONS":
+        return "", 204
+    conn = dividend_database.get_connection()
+    try:
+        req_data = request.get_json(silent=True) or {}
+        old_ev = dividend_database.get_dividend_event(conn, event_id)
+        if not old_ev:
+            return jsonify({"error": "Event tidak ditemukan."}), 404
+            
+        old_dict = old_ev.to_dict()
+        
+        # Apply edits
+        for key in [
+            "ticker", "ticker_yahoo", "company_name", "action_type", "dividend_per_share",
+            "announcement_date", "cum_date_regular", "ex_date_regular", "cum_date_cash", "ex_date_cash",
+            "recording_date", "payment_date", "source_name", "source_url", "verification_status"
+        ]:
+            if key in req_data:
+                val = req_data[key]
+                if key == "dividend_per_share" and val is not None:
+                    val = float(val)
+                setattr(old_ev, key, val)
+                
+        old_ev.updated_at = datetime.now(timezone.utc).isoformat()
+        
+        # Re-validate
+        is_valid, val_errors, val_warnings, recommended_status = dividend_event_validator.validate_dividend_event(old_ev, conn)
+        old_ev.parser_warnings = val_warnings
+        old_ev.validation_errors = val_errors
+        
+        # Save updated
+        dividend_database.save_dividend_event(conn, old_ev)
+        dividend_database.log_audit(conn, event_id, "PATCH", old_dict, old_ev.to_dict())
+        
+        return jsonify({"status": "success", "event": old_ev.to_dict()}), 200
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route("/api/dividend/events/<event_id>/verify", methods=["POST", "OPTIONS"])
+def api_dividend_verify_event(event_id: str) -> tuple[Any, int] | Response:
+    if request.method == "OPTIONS":
+        return "", 204
+    conn = dividend_database.get_connection()
+    try:
+        old_ev = dividend_database.get_dividend_event(conn, event_id)
+        if not old_ev:
+            return jsonify({"error": "Event tidak ditemukan."}), 404
+            
+        old_dict = old_ev.to_dict()
+        old_ev.verification_status = "manually_verified"
+        old_ev.updated_at = datetime.now(timezone.utc).isoformat()
+        
+        dividend_database.save_dividend_event(conn, old_ev)
+        dividend_database.log_audit(conn, event_id, "VERIFY", old_dict, old_ev.to_dict())
+        
+        return jsonify({"status": "success", "event": old_ev.to_dict()}), 200
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route("/api/dividend/events/<event_id>/reject", methods=["POST", "OPTIONS"])
+def api_dividend_reject_event(event_id: str) -> tuple[Any, int] | Response:
+    if request.method == "OPTIONS":
+        return "", 204
+    conn = dividend_database.get_connection()
+    try:
+        old_ev = dividend_database.get_dividend_event(conn, event_id)
+        if not old_ev:
+            return jsonify({"error": "Event tidak ditemukan."}), 404
+            
+        old_dict = old_ev.to_dict()
+        old_ev.verification_status = "rejected"
+        old_ev.updated_at = datetime.now(timezone.utc).isoformat()
+        
+        dividend_database.save_dividend_event(conn, old_ev)
+        dividend_database.log_audit(conn, event_id, "REJECT", old_dict, old_ev.to_dict())
+        
+        return jsonify({"status": "success", "event": old_ev.to_dict()}), 200
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route("/api/dividend/backtest", methods=["POST", "OPTIONS"])
+def api_dividend_backtest() -> tuple[Any, int] | Response:
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        req_data = request.get_json(silent=True) or {}
+        symbol = req_data.get("symbol", "").strip()
+        years = int(req_data.get("years", 5))
+        strategy_variant = req_data.get("strategy_variant", "buy_h10_sell_h1")
+        
+        if not symbol:
+            return jsonify({"error": "Parameter symbol wajib diisi."}), 400
+            
+        result = dividend_event_backtest.run_dividend_backtest(
+            symbol=symbol,
+            years=years,
+            strategy_variant=strategy_variant
+        )
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+
+@app.get("/api/dividend/calendar")
+def api_dividend_calendar() -> tuple[Any, int]:
+    conn = dividend_database.get_connection()
+    try:
+        events = dividend_database.get_active_dividend_events(conn)
+        return jsonify({"status": "success", "events": [e.to_dict() for e in events]}), 200
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+    finally:
+        conn.close()
+
+# ==============================================================================
+# NEWS & CATALYST REVIEW LAYER ENDPOINTS
+# ==============================================================================
+
+@app.route("/api/news/search-catalyst", methods=["POST", "OPTIONS"])
+def api_news_search_catalyst() -> tuple[Any, int] | Response:
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        req_data = request.get_json(silent=True) or {}
+        ticker = req_data.get("ticker", "").strip()
+        company_name = req_data.get("company_name", "").strip() or None
+        days_back = int(req_data.get("days_back", 30))
+        max_sources = int(req_data.get("max_sources", 8))
+        force_refresh = bool(req_data.get("force_refresh", False))
+        
+        if not ticker:
+            return jsonify({"error": "Parameter ticker wajib diisi."}), 400
+            
+        res = news_catalyst_service.get_news_catalyst_source_pack(
+            ticker=ticker,
+            company_name=company_name,
+            days_back=days_back,
+            max_sources=max_sources,
+            force_refresh=force_refresh
+        )
+        return jsonify(res), 200
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+
+@app.route("/api/yahoo/review_single_with_news", methods=["POST", "OPTIONS"])
+def api_yahoo_review_single_with_news() -> tuple[Any, int] | Response:
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        payload = request.get_json(silent=True) or {}
+        symbol = payload.get("symbol", "").strip()
+        use_news_search = bool(payload.get("use_news_search", True))
+        days_back = int(payload.get("days_back", 30))
+        max_sources = int(payload.get("max_sources", 8))
+        force_refresh = bool(payload.get("force_refresh", False))
+        syariah_filter = bool(payload.get("syariah_filter", False))
+        
+        if not symbol:
+            return jsonify({"error": "Parameter symbol wajib diisi."}), 400
+            
+        cleaned = symbol.upper()
+        if not cleaned.endswith(".JK"):
+            cleaned = f"{cleaned}.JK"
+            
+        # Get DB/settings and api_keys
+        state_row = get_db().execute("SELECT data FROM app_state WHERE key = ?", (APP_STATE_KEY,)).fetchone()
+        app_data = json.loads(state_row["data"]) if state_row else {}
+        settings = app_data.get("settings", {})
+        api_keys = get_deepseek_keys_from_settings(settings)
+        if not api_keys:
+            return jsonify({"error": "Kunci API DeepSeek belum dikonfigurasi di Pengaturan."}), 400
+
+        # Screen Ticker using batch_screener
+        candidate = batch_screener.screen_ticker(
+            cleaned,
+            load_batch_screening_data,
+            syariah_filter=syariah_filter,
+            run_backtest=True,
+            min_risk_reward=1.0,
+            time_stop_days=30
+        )
+        
+        if use_news_search:
+            # Fetch news source pack
+            res = news_catalyst_service.get_news_catalyst_source_pack(
+                ticker=cleaned,
+                company_name=candidate.get("name"),
+                days_back=days_back,
+                max_sources=max_sources,
+                force_refresh=force_refresh
+            )
+            
+            source_pack = res.get("source_pack", {})
+            catalyst_analysis = res.get("catalyst_analysis", {})
+            
+            # Review with DeepSeek
+            review_data = deepseek_catalyst_reviewer.review_candidate_with_news(
+                candidate=candidate,
+                source_pack=source_pack,
+                catalyst_analysis=catalyst_analysis,
+                api_keys=api_keys
+            )
+            
+            # Enrich candidate
+            candidate["news_search_status"] = source_pack.get("search_status", "disabled")
+            candidate["news_catalyst_summary"] = review_data.get("news_catalyst_summary", "")
+            candidate["news_risk_summary"] = review_data.get("risk_summary", "")
+            candidate["news_source_quality"] = review_data.get("source_quality", "none")
+            candidate["news_sources"] = review_data.get("supporting_sources", [])
+            candidate["catalyst_flags"] = review_data.get("catalyst_flags", [])
+            candidate["risk_flags"] = review_data.get("risk_flags", [])
+            candidate["ai_final_signal_with_news"] = review_data.get("ai_final_signal", candidate["quant_signal"])
+            candidate["ai_news_review_reason"] = review_data.get("decision_reason", "")
+            candidate["news_review_warnings"] = catalyst_analysis.get("warnings", [])
+            
+            if candidate["ai_final_signal_with_news"] != candidate["quant_signal"]:
+                candidate["screening_status"] = "warning"
+                candidate["warnings"].append(
+                    f"AI News reviewer men-downgrade signal menjadi {candidate['ai_final_signal_with_news']}."
+                )
+
+        return jsonify({"success": True, "review": candidate}), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==============================================================================
+# STOCKBIT ORDER BOOK CONFIRMATION ENDPOINTS (Stages 2 & 3)
+# ==============================================================================
+
+@app.route("/api/execution/orderbook/check", methods=["POST", "OPTIONS"])
+def api_execution_orderbook_check() -> tuple[Any, int] | Response:
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        payload = request.get_json(silent=True) or {}
+        ticker = payload.get("ticker", "").strip()
+        candidate_id = payload.get("candidate_id", "").strip()
+        planned_order_lots = int(payload.get("planned_order_lots", 1))
+        headless = bool(payload.get("headless", True))  # Default to headless in API for speed
+        
+        if not ticker:
+            return jsonify({"error": "Parameter ticker wajib diisi."}), 400
+            
+        # Normalize ticker: strip .JK suffix
+        ticker_clean = ticker.upper()
+        if ticker_clean.endswith(".JK"):
+            ticker_clean = ticker_clean[:-3]
+            
+        # 1. Fetch live order book HTML from Stockbit using reader
+        try:
+            html_content, page_url = stockbit_orderbook_reader.read_stockbit_symbol_html(
+                ticker=ticker_clean,
+                headless=headless
+            )
+        except stockbit_orderbook_reader.NeedsLoginError as e:
+            return jsonify({
+                "status": "failed",
+                "error": "NEEDS_LOGIN",
+                "message": str(e)
+            }), 401
+        except Exception as e:
+            return jsonify({
+                "status": "failed",
+                "error": "READ_ERROR",
+                "message": f"Gagal membaca Stockbit: {str(e)}"
+            }), 500
+            
+        # 2. Parse HTML content using stockbit_orderbook_parser
+        snapshot = stockbit_orderbook_parser.parse_stockbit_html(html_content, ticker_clean)
+        snapshot.page_url = page_url
+        
+        # 3. Retrieve scanned candidate by ID to verify it exists
+        candidate = None
+        if candidate_id:
+            candidate = batch_screener.find_candidate_by_id(candidate_id)
+            
+        # 4. Evaluate execution readiness via engine
+        eval_result = orderbook_execution_engine.evaluate_execution_readiness(
+            snapshot=snapshot,
+            candidate=candidate,
+            planned_order_lots=planned_order_lots
+        )
+        
+        # Save snapshot and evaluation to database
+        db = get_db()
+        snapshot_id = orderbook_database.save_orderbook_snapshot(db, snapshot, eval_result)
+        
+        # Save initial review (without AI) to database
+        review_id = orderbook_database.save_execution_review(
+            db,
+            ticker=ticker_clean,
+            candidate=candidate,
+            snapshot=snapshot,
+            result=eval_result
+        )
+        db.commit()
+        
+        # Return results
+        return jsonify({
+            "status": "success",
+            "snapshot_id": snapshot_id,
+            "review_id": review_id,
+            "snapshot": {
+                "ticker": snapshot.ticker,
+                "last_price": snapshot.last_price,
+                "best_bid_price": snapshot.best_bid_price,
+                "best_offer_price": snapshot.best_offer_price,
+                "spread_ticks": snapshot.spread_ticks,
+                "spread_percent": snapshot.spread_percent,
+                "timestamp_read": snapshot.timestamp_read,
+                "read_confidence": snapshot.read_confidence,
+                "parser_warnings": snapshot.parser_warnings,
+                "bid_rows": [{"price": r.price, "volume": r.volume} for r in snapshot.bid_rows],
+                "offer_rows": [{"price": r.price, "volume": r.volume} for r in snapshot.offer_rows]
+            },
+            "evaluation": {
+                "ticker": eval_result.ticker,
+                "execution_status": eval_result.execution_status,
+                "execution_score": eval_result.execution_score,
+                "orderbook_metrics": eval_result.orderbook_metrics,
+                "execution_reasons": eval_result.execution_reasons,
+                "execution_warnings": eval_result.execution_warnings,
+                "suggested_action": eval_result.suggested_action,
+                "manual_only": eval_result.manual_only,
+                "stale_snapshot": eval_result.stale_snapshot
+            }
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+
+@app.route("/api/execution/orderbook/review", methods=["POST", "OPTIONS"])
+def api_execution_orderbook_review() -> tuple[Any, int] | Response:
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        payload = request.get_json(silent=True) or {}
+        ticker = payload.get("ticker", "").strip()
+        candidate_id = payload.get("candidate_id", "").strip()
+        
+        if not ticker:
+            return jsonify({"error": "Parameter ticker wajib diisi."}), 400
+            
+        # Normalize ticker: strip .JK suffix
+        ticker_clean = ticker.upper()
+        if ticker_clean.endswith(".JK"):
+            ticker_clean = ticker_clean[:-3]
+            
+        # Get DB
+        db = get_db()
+        
+        # Load latest snapshot and engine result
+        snapshot_res = orderbook_database.get_latest_orderbook_snapshot(db, ticker_clean)
+        if not snapshot_res:
+            return jsonify({"error": f"Tidak ada snapshot order book tersimpan untuk {ticker}. Silakan jalankan check terlebih dahulu."}), 400
+            
+        snapshot, eval_result = snapshot_res
+        
+        # Retrieve candidate to pass to DeepSeek
+        candidate = None
+        if candidate_id:
+            candidate = batch_screener.find_candidate_by_id(candidate_id)
+            
+        # Retrieve settings and api keys
+        state_row = db.execute("SELECT data FROM app_state WHERE key = ?", (APP_STATE_KEY,)).fetchone()
+        app_data = json.loads(state_row["data"]) if state_row else {}
+        settings = app_data.get("settings", {})
+        api_keys = get_deepseek_keys_from_settings(settings)
+        if not api_keys:
+            return jsonify({"error": "Kunci API DeepSeek belum dikonfigurasi di Pengaturan."}), 400
+            
+        # Call DeepSeek Execution Reviewer
+        import deepseek_execution_reviewer
+        ai_review = deepseek_execution_reviewer.review_execution_readiness(
+            ticker=ticker_clean,
+            eval_result=eval_result,
+            snapshot_data=snapshot.to_dict(),
+            candidate=candidate,
+            api_keys=api_keys
+        )
+        
+        # Save review into database
+        review_id = orderbook_database.save_execution_review(
+            db,
+            ticker=ticker_clean,
+            candidate=candidate,
+            snapshot=snapshot,
+            result=eval_result,
+            deepseek_review=ai_review
+        )
+        db.commit()
+        
+        return jsonify({
+            "status": "success",
+            "review_id": review_id,
+            "ai_review": ai_review
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+
+@app.route("/api/execution/orderbook/check-top-candidates", methods=["POST", "OPTIONS"])
+def api_execution_orderbook_check_top_candidates() -> tuple[Any, int] | Response:
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        # Stub for later optional batch confirmation
+        return jsonify({
+            "status": "success",
+            "message": "Check top candidates endpoint is registered.",
+            "candidates": []
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
 
 
 if __name__ == "__main__":

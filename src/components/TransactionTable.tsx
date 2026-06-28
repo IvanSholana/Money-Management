@@ -53,7 +53,7 @@ export function TransactionTable({
   const pocketOptions = getActivePockets(pockets);
 
   return (
-    <section className={`panel min-w-0 ${scrollable ? "flex max-h-[calc(100vh-19rem)] min-h-[540px] flex-col overflow-hidden" : ""}`}>
+    <section className={`panel min-w-0 ${scrollable ? "flex max-h-[calc(100vh-19rem)] flex-col overflow-hidden" : ""}`}>
       <div className="mb-4 grid shrink-0 gap-4">
         <h2 className="section-title text-lg font-black tracking-tight text-navy">Daftar Transaksi</h2>
         {showFilters ? (
@@ -129,7 +129,7 @@ export function TransactionTable({
           <p className="font-semibold text-sm">Belum ada transaksi sesuai filter.</p>
         </div>
       ) : (
-        <div className={`grid gap-3 ${scrollable ? "overflow-y-auto pr-1" : ""}`}>
+        <div className={`grid gap-3 ${scrollable ? "flex-1 min-h-0 overflow-y-auto pr-1" : ""}`}>
           <AnimatePresence mode="popLayout">
             {filteredTransactions.map((transaction, index) => {
               const pocketText =

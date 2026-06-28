@@ -293,6 +293,7 @@ export interface TechnicalMetrics {
   rank?: number;
   screeningStatus?: "passed" | "rejected" | "warning";
   rejectionReason?: string | null;
+  candidate_id?: string;
   fundamentalSource?: "yfinance" | "twelve_data" | "thesis" | "unavailable";
   fundamentalAsOf?: string | null;
   fundamentalFreshness?: "fresh" | "statement_fresh" | "manual" | "stale" | "unavailable";
@@ -340,3 +341,134 @@ export interface TechnicalMetrics {
   success: boolean;
   error?: string;
 }
+
+export interface DividendEvent {
+  id: string;
+  ticker: string;
+  ticker_yahoo?: string;
+  company_name?: string;
+  action_type: string;
+  dividend_per_share: number;
+  announcement_date?: string;
+  cum_date_regular?: string;
+  ex_date_regular?: string;
+  cum_date_cash?: string;
+  ex_date_cash?: string;
+  recording_date?: string;
+  payment_date?: string;
+  source_name?: string;
+  source_url?: string;
+  raw_text?: string;
+  raw_html?: string;
+  confidence_score: number;
+  verification_status: "collected" | "auto_verified" | "needs_review" | "rejected" | "manually_verified" | "stale";
+  parser_warnings: string[];
+  validation_errors: string[];
+  created_at?: string;
+  updated_at?: string;
+  last_collected_at?: string;
+}
+
+export interface DividendCollectionResult {
+  status: string;
+  source_results: Array<{ source: string; status: string; warnings: string[]; errors: string[] }>;
+  collected_count: number;
+  inserted_count: number;
+  updated_count: number;
+  duplicate_count: number;
+  rejected_count: number;
+  needs_review_count: number;
+  warnings: string[];
+  errors: string[];
+}
+
+export interface DividendMomentumCandidate {
+  ticker: string;
+  ticker_yahoo: string;
+  company_name: string;
+  dividend_per_share: number;
+  current_price: number;
+  dividend_yield_percent: number;
+  announcement_date?: string;
+  cum_date_regular: string;
+  ex_date_regular: string;
+  recording_date?: string;
+  payment_date?: string;
+  days_to_cum: number;
+  days_to_ex: number;
+  price_return_since_announcement: number;
+  price_return_5d: number;
+  price_return_10d: number;
+  volume_ratio_20d: number;
+  distance_to_ma20_percent: number;
+  historical_runup_score: number;
+  ex_date_drop_risk_score: number;
+  fundamental_quality_score: number;
+  syariah_status: string;
+  final_score: number;
+  final_status: "AVOID" | "WATCH" | "DIVIDEND_MOMENTUM_CANDIDATE" | "HIGH_CONVICTION_RUN_UP";
+  score_components: Record<string, number>;
+  entry_plan: string;
+  exit_plan: string;
+  warnings: string[];
+  rejection_reasons: string[];
+  source_name: string;
+  source_url?: string;
+  verification_status: string;
+  confidence_score: number;
+}
+
+export interface OrderBookRow {
+  price: number;
+  volume: number;
+}
+
+export interface OrderBookSnapshot {
+  ticker: string;
+  page_url?: string;
+  last_price?: number;
+  best_bid_price?: number;
+  best_offer_price?: number;
+  spread_ticks?: number;
+  spread_percent?: number;
+  bid_rows: OrderBookRow[];
+  offer_rows: OrderBookRow[];
+  timestamp_read: string;
+  read_confidence: number;
+  parser_warnings: string[];
+}
+
+export interface ExecutionEvaluation {
+  ticker: string;
+  execution_status: "EXECUTION_OK" | "AVOID_EXECUTION" | "MANUAL_REVIEW" | "CANDIDATE_NOT_FOUND";
+  execution_score: number;
+  orderbook_metrics: Record<string, any>;
+  execution_reasons: string[];
+  execution_warnings: string[];
+  suggested_action: string;
+  manual_only: boolean;
+  stale_snapshot: boolean;
+}
+
+export interface DeepSeekExecutionReview {
+  ai_execution_status: "EXECUTION_OK" | "AVOID_EXECUTION" | "MANUAL_REVIEW";
+  ai_confidence: number;
+  summary: string;
+  execution_risks: string[];
+  supporting_factors: string[];
+  blocking_factors: string[];
+  manual_checklist: string[];
+  final_note: string;
+}
+
+export interface OrderBookConfirmResult {
+  status: "success" | "failed";
+  snapshot_id?: string;
+  review_id?: string;
+  snapshot?: OrderBookSnapshot;
+  evaluation?: ExecutionEvaluation;
+  error?: string;
+  message?: string;
+}
+
+

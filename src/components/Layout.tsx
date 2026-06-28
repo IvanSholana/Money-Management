@@ -12,10 +12,11 @@ import {
   Sun,
   Moon,
   TrendingUp,
+  CalendarDays,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
-type Page = "ai-landing" | "dashboard" | "transactions" | "monthly" | "pockets" | "assets" | "targets" | "thesis" | "scanner" | "settings";
+type Page = "ai-landing" | "dashboard" | "transactions" | "monthly" | "pockets" | "assets" | "targets" | "thesis" | "scanner" | "dividend-scanner" | "settings";
 
 type LayoutProps = {
   page: Page;
@@ -36,6 +37,7 @@ const navItems: Array<{ id: Page; label: string; icon: React.ElementType }> = [
   { id: "targets", label: "Target", icon: Target },
   { id: "thesis", label: "Tesis", icon: BookOpenCheck },
   { id: "scanner", label: "Algo & AI Trading", icon: TrendingUp },
+  { id: "dividend-scanner", label: "Dividend Scanner", icon: CalendarDays },
   { id: "settings", label: "Pengaturan", icon: Settings },
 ];
 
@@ -95,19 +97,12 @@ export function Layout({ page, storageStatus, theme, onThemeToggle, onPageChange
                   key={item.id}
                   className={`relative inline-flex min-h-9 items-center gap-2 whitespace-nowrap rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300 outline-none ${
                     isActive
-                      ? "text-white z-10"
+                      ? "bg-gradient-to-r from-teal to-emerald-500 shadow-md shadow-teal/25 border border-white/10 text-white z-10"
                       : "text-slate-300 hover:text-white hover:bg-white/5"
                   }`}
                   onClick={() => onPageChange(item.id)}
                   type="button"
                 >
-                  {isActive && (
-                    <motion.div
-                      layoutId="activeNav"
-                      className="absolute inset-0 rounded-xl bg-gradient-to-r from-teal to-emerald-500 shadow-md shadow-teal/25 border border-white/10 z-[-1]"
-                      transition={{ type: "spring", stiffness: 380, damping: 30 }}
-                    />
-                  )}
                   <item.icon size={16} className={`${isActive ? "animate-sparkle" : "opacity-75"}`} />
                   <span>{item.label}</span>
                 </button>

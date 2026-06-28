@@ -17,7 +17,10 @@ import {
   Compass,
   Bell,
   Play,
-  Trash2
+  Trash2,
+  BookOpen,
+  Lock,
+  ShieldAlert
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -49,6 +52,7 @@ interface AiTradingAdvice {
   ai_risk_note?: string;
   ai_entry_comment?: string;
   ai_exit_comment?: string;
+  news_sources?: Array<{ source_name: string; title: string; url?: string; snippet?: string }>;
 }
 
 export function TradingScanner({ settings, theses, onThesesChange }: TradingScannerProps) {
@@ -61,6 +65,7 @@ export function TradingScanner({ settings, theses, onThesesChange }: TradingScan
   const [inputTickers, setInputTickers] = useState<string>(
     defaultTickers.length > 0 ? defaultTickers.join(", ") : "BBRI, TLKM, ASII, GOTO, AAPL"
   );
+  const [useNewsSearch, setUseNewsSearch] = useState(true);
   const [scanResults, setScanResults] = useState<TechnicalMetrics[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -75,6 +80,18 @@ export function TradingScanner({ settings, theses, onThesesChange }: TradingScan
   const [aiAdvices, setAiAdvices] = useState<Record<string, AiTradingAdvice>>({});
   const [isGeneratingAi, setIsGeneratingAi] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+
+  // States for Stockbit Order Book Execution Confirmation
+  const [plannedLots, setPlannedLots] = useState<number>(1);
+  const [headlessScraping, setHeadlessScraping] = useState<boolean>(true);
+  const [isVerifyingOrderBook, setIsVerifyingOrderBook] = useState<boolean>(false);
+  const [isReviewingOrderBookAi, setIsReviewingOrderBookAi] = useState<boolean>(false);
+  const [obSnapshot, setObSnapshot] = useState<any | null>(null);
+  const [obEvaluation, setObEvaluation] = useState<any | null>(null);
+  const [obAiReview, setObAiReview] = useState<any | null>(null);
+  const [obError, setObError] = useState<string | null>(null);
+  const [obMessage, setObMessage] = useState<string | null>(null);
+  const [obCheckedChecklist, setObCheckedChecklist] = useState<Record<number, boolean>>({});
 
   // Background Auto-Scan States
   const [activeTab, setActiveTab] = useState<"manual" | "auto">("manual");
@@ -322,6 +339,14 @@ export function TradingScanner({ settings, theses, onThesesChange }: TradingScan
     setChartData([]);
     setIsFetchingHistory(true);
     setAiError(null);
+    
+    // Reset order book states
+    setObSnapshot(null);
+    setObEvaluation(null);
+    setObAiReview(null);
+    setObError(null);
+    setObMessage(null);
+    setObCheckedChecklist({});
 
     try {
       const response = await fetch(`/api/yahoo/history?symbol=${encodeURIComponent(metric.symbol)}&range=1y`);
@@ -359,19 +384,104 @@ export function TradingScanner({ settings, theses, onThesesChange }: TradingScan
     return chartData.slice(-limit);
   }, [chartData, chartRange]);
 
+  // Call backend to check Stockbit Order Book
+  const handleCheckOrderBook = async () => {
+    if (!selectedMetric) return;
+    setIsVerifyingOrderBook(true);
+    setObError(null);
+    setObMessage(null);
+    setObSnapshot(null);
+    setObEvaluation(null);
+    setObAiReview(null);
+    setObCheckedChecklist({});
+
+    try {
+      const response = await fetch("/api/execution/orderbook/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticker: selectedMetric.symbol,
+          candidate_id: selectedMetric.candidate_id,
+          planned_order_lots: plannedLots,
+          headless: headlessScraping,
+        }),
+      });
+
+      const resData = await response.json();
+      if (!response.ok) {
+        if (response.status === 401 && resData.error === "NEEDS_LOGIN") {
+          throw new Error("NEEDS_LOGIN");
+        }
+        throw new Error(resData.message || resData.error || "Gagal memproses verifikasi order book.");
+      }
+
+      if (resData.status === "success") {
+        setObSnapshot(resData.snapshot);
+        setObEvaluation(resData.evaluation);
+        setObMessage("Verifikasi order book berhasil diperbarui.");
+      } else {
+        throw new Error(resData.error || "Gagal memproses verifikasi.");
+      }
+    } catch (err: any) {
+      if (err.message === "NEEDS_LOGIN") {
+        setObError("Sesi Stockbit belum masuk (NEEDS_LOGIN). Silakan nonaktifkan Headless mode (centang mati Headless) lalu jalankan verifikasi lagi untuk login secara manual di browser.");
+      } else {
+        setObError(err.message || "Gagal menghubungi backend untuk cek order book.");
+      }
+    } finally {
+      setIsVerifyingOrderBook(false);
+    }
+  };
+
+  // Call backend to trigger DeepSeek AI Risk Review
+  const handleReviewOrderBookAi = async () => {
+    if (!selectedMetric || !obSnapshot) return;
+    setIsReviewingOrderBookAi(true);
+    setObError(null);
+
+    try {
+      const response = await fetch("/api/execution/orderbook/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticker: selectedMetric.symbol,
+          candidate_id: selectedMetric.candidate_id,
+        }),
+      });
+
+      const resData = await response.json();
+      if (!response.ok) {
+        throw new Error(resData.message || resData.error || "Gagal memproses review AI.");
+      }
+
+      if (resData.status === "success") {
+        setObAiReview(resData.ai_review);
+        setObMessage("Review risiko AI DeepSeek berhasil dimuat.");
+      } else {
+        throw new Error(resData.error || "Gagal memproses review AI.");
+      }
+    } catch (err: any) {
+      setObError(err.message || "Gagal menghubungi backend untuk review AI.");
+    } finally {
+      setIsReviewingOrderBookAi(false);
+    }
+  };
+
   // Generate AI Swing Strategy using DeepSeek via backend
   const generateAiStrategy = async (metric: TechnicalMetrics) => {
     setIsGeneratingAi(true);
     setAiError(null);
 
     try {
-      const response = await fetch("/api/yahoo/review_single", {
+      const endpoint = useNewsSearch ? "/api/yahoo/review_single_with_news" : "/api/yahoo/review_single";
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          symbol: metric.symbol
+          symbol: metric.symbol,
+          use_news_search: useNewsSearch
         })
       });
 
@@ -382,9 +492,21 @@ export function TradingScanner({ settings, theses, onThesesChange }: TradingScan
 
       const data = await response.json();
       if (data.success && data.review) {
+        let adviceObj = data.review;
+        if (useNewsSearch) {
+          adviceObj = {
+            ...adviceObj,
+            ai_final_signal: adviceObj.ai_final_signal_with_news || adviceObj.quant_signal,
+            ai_confidence: adviceObj.news_source_quality === "official" ? "high" : "medium",
+            ai_reason: adviceObj.ai_news_review_reason || "",
+            ai_risk_note: adviceObj.news_risk_summary || "",
+            ai_entry_comment: adviceObj.entry_status === "valid_entry" ? "Gunakan strategi entry quant." : "Menunggu konfirmasi sinyal.",
+            ai_exit_comment: adviceObj.exit_plan ? "Disiplin take profit dan stop loss." : "Lihat strategi keluar.",
+          };
+        }
         setAiAdvices((prev) => ({
           ...prev,
-          [metric.symbol]: data.review
+          [metric.symbol]: adviceObj
         }));
       } else {
         throw new Error(data.error || "Gagal mendapatkan review dari DeepSeek.");
@@ -642,12 +764,329 @@ export function TradingScanner({ settings, theses, onThesesChange }: TradingScan
               </div>
             </div>
             
-            <div className="bg-slate-900/40 rounded-xl p-3.5 border border-slate-800 mt-4 text-xs font-bold">
-              <p className="text-slate-400 text-[10px] uppercase tracking-wider mb-1 text-teal">Alasan Sinyal & Konteks Rezim:</p>
-              <p className="text-slate-200 font-medium leading-relaxed">{selectedMetric.algoReason}</p>
+            </div>
+
+            {/* Stockbit Order Book Execution Confirmation (Stage 4 UI) */}
+            <div className="glass-card p-6 border-cyan-500/25 border">
+              <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-4">
+                <h4 className="text-md font-bold text-white flex items-center gap-2">
+                  <BookOpen size={18} className="text-teal" />
+                  <span>Konfirmasi Kesiapan Eksekusi (Stockbit Order Book)</span>
+                </h4>
+                <span className="text-[10px] bg-slate-900 border border-slate-800 text-slate-400 px-2 py-0.5 rounded-lg flex items-center gap-1 font-bold">
+                  <ShieldCheck size={10} className="text-teal" />
+                  Read-Only Safe
+                </span>
+              </div>
+
+              {/* Config inputs */}
+              <div className="grid gap-4 sm:grid-cols-2 mb-4 bg-slate-950/40 border border-slate-850 p-4 rounded-xl">
+                <div>
+                  <label className="block text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1.5">
+                    Ukuran Order yang Direncanakan (Lot)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="1"
+                      value={plannedLots}
+                      onChange={(e) => setPlannedLots(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-full bg-slate-900/80 border border-slate-800 hover:border-slate-700/80 rounded-xl py-2 px-3 text-sm text-white font-mono focus:border-teal focus:ring-1 focus:ring-teal/30 transition-all"
+                    />
+                    <span className="absolute right-3 top-2.5 text-xs text-slate-500 font-bold">Lot</span>
+                  </div>
+                </div>
+                <div className="flex flex-col justify-end">
+                  <label className="flex items-center gap-2.5 bg-slate-900/60 border border-slate-800 hover:border-slate-700/80 px-3.5 py-2.5 rounded-xl cursor-pointer select-none transition-all">
+                    <input
+                      type="checkbox"
+                      checked={headlessScraping}
+                      onChange={(e) => setHeadlessScraping(e.target.checked)}
+                      className="w-4 h-4 rounded text-teal bg-slate-950 border-slate-800 focus:ring-teal cursor-pointer"
+                    />
+                    <div className="text-left">
+                      <p className="text-xs font-bold text-white flex items-center gap-1">
+                        <span>Headless Mode</span>
+                        <Lock size={10} className="text-slate-500" />
+                      </p>
+                      <p className="text-[9px] text-slate-500 mt-0.5">Automasi latar belakang (cepat)</p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Error and Info messages */}
+              {obError && (
+                <div className="bg-rose-950/20 border border-rose-900/40 text-rose-300 rounded-xl p-3.5 text-xs font-semibold mb-4 leading-relaxed flex gap-2">
+                  <ShieldAlert size={16} className="shrink-0 text-rose-400" />
+                  <div>
+                    <p className="font-bold text-rose-200">Terjadi Kesalahan Keamanan / Sistem</p>
+                    <p className="mt-0.5">{obError}</p>
+                  </div>
+                </div>
+              )}
+
+              {obMessage && !obError && (
+                <div className="bg-emerald-950/20 border border-emerald-900/40 text-emerald-300 rounded-xl p-3.5 text-xs font-semibold mb-4 flex gap-2">
+                  <CheckCircle2 size={16} className="shrink-0 text-emerald-400" />
+                  <span>{obMessage}</span>
+                </div>
+              )}
+
+              {/* Action Check button */}
+              <div className="flex justify-end gap-3 mb-4">
+                <button
+                  onClick={handleCheckOrderBook}
+                  disabled={isVerifyingOrderBook || isReviewingOrderBookAi}
+                  type="button"
+                  className="secondary-button !py-2.5 px-5 text-xs font-bold bg-teal text-white rounded-xl shadow border-0 hover:brightness-110 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {isVerifyingOrderBook ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" />
+                      <span>Membaca Order Book Stockbit (Chrome)...</span>
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw size={14} />
+                      <span>Jalankan Verifikasi Order Book</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Snapshot results */}
+              {obSnapshot && obEvaluation && (
+                <div className="space-y-4 pt-4 border-t border-slate-800/80">
+                  {/* Header score & status */}
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between bg-slate-900/30 border border-slate-800/50 p-4 rounded-xl">
+                    <div className="flex items-center gap-4">
+                      <div className="relative flex items-center justify-center">
+                        {/* Score circle */}
+                        <svg className="w-16 h-16 transform -rotate-90">
+                          <circle
+                            cx="32"
+                            cy="32"
+                            r="28"
+                            stroke="rgba(30, 41, 59, 0.5)"
+                            strokeWidth="6"
+                            fill="transparent"
+                          />
+                          <circle
+                            cx="32"
+                            cy="32"
+                            r="28"
+                            stroke={
+                              obEvaluation.execution_status === "EXECUTION_OK" ? "#10b981" :
+                              obEvaluation.execution_status === "MANUAL_REVIEW" ? "#f59e0b" : "#f43f5e"
+                            }
+                            strokeWidth="6"
+                            fill="transparent"
+                            strokeDasharray={176}
+                            strokeDashoffset={176 - (176 * obEvaluation.execution_score) / 100}
+                            className="transition-all duration-1000 ease-out"
+                          />
+                        </svg>
+                        <span className="absolute text-sm font-black text-white font-mono">
+                          {Math.round(obEvaluation.execution_score)}
+                        </span>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Hasil Verifikasi Kesiapan</p>
+                        <h5 className={`text-sm font-black mt-0.5 ${
+                          obEvaluation.execution_status === "EXECUTION_OK" ? "text-emerald-400" :
+                          obEvaluation.execution_status === "MANUAL_REVIEW" ? "text-amber-500" : "text-rose-400"
+                        }`}>
+                          {obEvaluation.execution_status === "EXECUTION_OK" ? "LAYAK EKSEKUSI (OK)" :
+                           obEvaluation.execution_status === "MANUAL_REVIEW" ? "TINJAU MANUAL (WARNING)" : "HINDARI EKSEKUSI (REJECT)"}
+                        </h5>
+                        <p className="text-[10px] text-slate-400 mt-0.5">
+                          Dibaca pada: <span className="font-mono text-slate-355">{new Date(obSnapshot.timestamp_read).toLocaleTimeString()}</span> ({Math.round(obSnapshot.read_confidence)}% confidence)
+                        </p>
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-xs bg-slate-900 border border-slate-800 text-slate-400 px-3 py-1.5 rounded-xl font-bold block text-center">
+                        Saran: <span className="text-white">{obEvaluation.suggested_action}</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Metrics detail table */}
+                  <div className="grid gap-3 grid-cols-2 sm:grid-cols-4">
+                    <div className="bg-slate-900/20 border border-slate-850 p-3 rounded-xl text-center">
+                      <p className="text-slate-500 text-[9px] font-bold uppercase">Harga Bid/Offer</p>
+                      <p className="text-sm font-black text-white font-mono mt-0.5">
+                        {obSnapshot.best_bid_price?.toLocaleString()} / {obSnapshot.best_offer_price?.toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="bg-slate-900/20 border border-slate-850 p-3 rounded-xl text-center">
+                      <p className="text-slate-500 text-[9px] font-bold uppercase">Spread Bid-Offer</p>
+                      <p className={`text-sm font-black font-mono mt-0.5 ${
+                        obSnapshot.spread_ticks <= 1 ? "text-emerald-400" :
+                        obSnapshot.spread_ticks <= 3 ? "text-amber-500" : "text-rose-400"
+                      }`}>
+                        {obSnapshot.spread_ticks} Ticks <span className="text-[10px] font-normal text-slate-500">({obSnapshot.spread_percent}%)</span>
+                      </p>
+                    </div>
+                    <div className="bg-slate-900/20 border border-slate-850 p-3 rounded-xl text-center">
+                      <p className="text-slate-500 text-[9px] font-bold uppercase">Rasio Bid Depth</p>
+                      <p className="text-sm font-black text-white font-mono mt-0.5">
+                        {(obEvaluation.orderbook_metrics?.bid_depth_ratio || 0).toFixed(2)}x
+                      </p>
+                    </div>
+                    <div className="bg-slate-900/20 border border-slate-850 p-3 rounded-xl text-center">
+                      <p className="text-slate-500 text-[9px] font-bold uppercase">Kecukupan Lot</p>
+                      <p className={`text-sm font-black font-mono mt-0.5 ${
+                        obEvaluation.orderbook_metrics?.planned_lots_coverage >= 1.0 ? "text-emerald-400" : "text-rose-400"
+                      }`}>
+                        {((obEvaluation.orderbook_metrics?.planned_lots_coverage || 0) * 100).toFixed(0)}%
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Reasons list */}
+                  <div className="bg-slate-950/30 border border-slate-850 p-4 rounded-xl text-xs space-y-2">
+                    <p className="text-teal font-black uppercase text-[9px] tracking-wider mb-2">Evaluasi Kriteria Deterministik:</p>
+                    {obEvaluation.execution_reasons?.map((reason: string, idx: number) => (
+                      <div key={idx} className="flex gap-2 text-slate-300">
+                        <span className="text-emerald-400">✓</span>
+                        <span>{reason}</span>
+                      </div>
+                    ))}
+                    {obEvaluation.execution_warnings?.map((warn: string, idx: number) => (
+                      <div key={idx} className="flex gap-2 text-amber-400 font-bold">
+                        <span>⚠️</span>
+                        <span>{warn}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* DeepSeek AI Risk Review Section */}
+                  <div className="mt-6 border-t border-slate-800/80 pt-6">
+                    {obAiReview ? (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between bg-cyan-950/15 border border-cyan-800/30 p-4 rounded-xl">
+                          <div className="flex items-center gap-2">
+                            <Sparkles size={16} className="text-cyan-400 animate-pulse" />
+                            <div>
+                              <p className="text-[9px] text-slate-500 font-bold uppercase">AI Risk Status (DeepSeek)</p>
+                              <h5 className={`text-sm font-black uppercase mt-0.5 ${
+                                obAiReview.ai_execution_status === "EXECUTION_OK" ? "text-emerald-400" :
+                                obAiReview.ai_execution_status === "MANUAL_REVIEW" ? "text-amber-500" : "text-rose-400"
+                              }`}>
+                                {obAiReview.ai_execution_status === "EXECUTION_OK" ? "Eksekusi Disetujui (OK)" :
+                                 obAiReview.ai_execution_status === "MANUAL_REVIEW" ? "Tinjau Kembali (WARNING)" : "HINDARI EKSEKUSI (AVOID)"}
+                              </h5>
+                            </div>
+                          </div>
+                          <span className="text-xs bg-slate-900 border border-slate-800 text-slate-400 px-3 py-1.5 rounded-xl font-bold">
+                            AI Confidence: <span className="text-white">{obAiReview.ai_confidence}%</span>
+                          </span>
+                        </div>
+
+                        {/* AI Summary note */}
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-3.5 text-xs font-semibold">
+                          <p className="text-cyan-400 font-bold mb-1 uppercase tracking-wider text-[9px]">Hasil AI Risk Review:</p>
+                          <p className="text-slate-200 leading-relaxed font-medium">{obAiReview.summary}</p>
+                        </div>
+
+                        {/* AI Factors layout */}
+                        <div className="grid gap-4 sm:grid-cols-2 text-xs">
+                          <div className="bg-emerald-950/10 border border-emerald-900/20 p-3 rounded-xl">
+                            <p className="text-emerald-400 font-bold text-[9px] uppercase tracking-wider mb-2">Faktor Pendukung (+):</p>
+                            <ul className="space-y-1.5 text-slate-300 font-medium">
+                              {obAiReview.supporting_factors?.map((f: string, i: number) => (
+                                <li key={i} className="flex gap-1.5 items-start">
+                                  <span className="text-emerald-400 shrink-0">+</span>
+                                  <span>{f}</span>
+                                </li>
+                              ))}
+                              {obAiReview.supporting_factors?.length === 0 && <p className="text-slate-500">Tidak ada.</p>}
+                            </ul>
+                          </div>
+                          <div className="bg-rose-950/10 border border-rose-900/20 p-3 rounded-xl">
+                            <p className="text-rose-400 font-bold text-[9px] uppercase tracking-wider mb-2">Faktor Penghambat / Risiko (-):</p>
+                            <ul className="space-y-1.5 text-slate-300 font-medium">
+                              {obAiReview.execution_risks?.map((r: string, i: number) => (
+                                <li key={i} className="flex gap-1.5 items-start">
+                                  <span className="text-rose-400 shrink-0">-</span>
+                                  <span>{r}</span>
+                                </li>
+                              ))}
+                              {obAiReview.execution_risks?.length === 0 && <p className="text-slate-500">Tidak ada.</p>}
+                            </ul>
+                          </div>
+                        </div>
+
+                        {/* AI Checklist */}
+                        {obAiReview.manual_checklist?.length > 0 && (
+                          <div className="bg-slate-900/30 border border-slate-800 rounded-xl p-4">
+                            <p className="text-slate-400 font-black uppercase text-[9px] tracking-wider mb-3">Checklist Verifikasi Manual Sebelum Transaksi:</p>
+                            <div className="space-y-2.5">
+                              {obAiReview.manual_checklist.map((item: string, i: number) => (
+                                <label key={i} className="flex items-start gap-3 cursor-pointer select-none">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!obCheckedChecklist[i]}
+                                    onChange={(e) => {
+                                      setObCheckedChecklist(prev => ({ ...prev, [i]: e.target.checked }));
+                                    }}
+                                    className="w-4 h-4 rounded text-teal bg-slate-950 border-slate-850 focus:ring-teal cursor-pointer mt-0.5 shrink-0"
+                                  />
+                                  <span className={`text-xs ${obCheckedChecklist[i] ? "text-slate-500 line-through font-semibold" : "text-slate-200 font-bold"}`}>
+                                    {item}
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Final note */}
+                        {obAiReview.final_note && (
+                          <div className="bg-slate-950/40 border border-slate-850 p-3 rounded-xl text-xs font-semibold italic text-slate-400">
+                            <span className="font-bold not-italic text-[9px] uppercase tracking-wider text-slate-500 block mb-1">Catatan Akhir Reviewer:</span>
+                            "{obAiReview.final_note}"
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="bg-slate-950/20 border border-slate-850 rounded-xl p-6 text-center space-y-4">
+                        <div className="p-3 bg-cyan-950/20 border border-cyan-500/20 text-cyan-400 rounded-full inline-block">
+                          <Sparkles size={24} className="animate-pulse" />
+                        </div>
+                        <div>
+                          <h6 className="text-white text-xs font-bold font-black">Analisis AI Risk Review Order Book</h6>
+                          <p className="text-slate-500 text-[10px] leading-relaxed max-w-[280px] mx-auto mt-1">
+                            Gunakan DeepSeek AI untuk mendeteksi potensi spoofing (manipulasi antrean bid/ask) dan menghitung buffer likuiditas secara skeptis.
+                          </p>
+                        </div>
+                        <button
+                          onClick={handleReviewOrderBookAi}
+                          disabled={isReviewingOrderBookAi}
+                          type="button"
+                          className="inline-flex items-center justify-center gap-1.5 text-xs font-bold secondary-button !py-2 px-4 bg-gradient-to-r from-cyan-500 to-blue-500 text-white rounded-xl shadow border-0 hover:brightness-110 disabled:opacity-50"
+                        >
+                          {isReviewingOrderBookAi ? (
+                            <>
+                              <Loader2 size={12} className="animate-spin" />
+                              <span>Menganalisis Antrean Order Book...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles size={12} />
+                              <span>Jalankan AI Risk Review (DeepSeek)</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-        </div>
 
         {/* AI Trading Advice (Right Side) */}
         <div className="glass-card p-6 flex flex-col justify-between">
@@ -731,6 +1170,34 @@ export function TradingScanner({ settings, theses, onThesesChange }: TradingScan
                     <p className="text-slate-300 leading-relaxed text-[11px]">{advice.ai_exit_comment || "-"}</p>
                   </div>
                 </div>
+
+                {/* News Sources List */}
+                {advice.news_sources && advice.news_sources.length > 0 && (
+                  <div className="mt-4 border-t border-slate-800/80 pt-3 space-y-3">
+                    <p className="text-slate-400 font-bold uppercase tracking-wider text-[9px]">Sumber Berita Terkini & Katalis:</p>
+                    <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                      {advice.news_sources.map((src: any, idx: number) => (
+                        <div key={idx} className="bg-slate-900/40 border border-slate-850 rounded-xl p-2.5 text-[10px] space-y-1">
+                          <div className="flex justify-between items-center">
+                            <span className="font-bold text-teal">{src.source_name || "Berita"}</span>
+                            {src.url && (
+                              <a
+                                href={src.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-cyan-400 hover:underline font-bold"
+                              >
+                                Link
+                              </a>
+                            )}
+                          </div>
+                          <p className="font-bold text-slate-100">{src.title}</p>
+                          <p className="text-slate-400 leading-normal text-[9px]">{src.snippet}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-center py-8 space-y-4">
@@ -744,12 +1211,25 @@ export function TradingScanner({ settings, theses, onThesesChange }: TradingScan
                   </p>
                 </div>
                 {isBuySignal ? (
-                  <button
-                    onClick={() => generateAiStrategy(selectedMetric)}
-                    disabled={isGeneratingAi}
-                    type="button"
-                    className="inline-flex items-center justify-center gap-1.5 text-xs font-bold secondary-button !py-2.5 px-4 bg-gradient-to-r from-cyan-500 to-blue-500 text-white rounded-xl shadow border-0 hover:brightness-110 disabled:opacity-50"
-                  >
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="flex items-center gap-2 bg-slate-900/50 border border-slate-800 rounded-xl px-3 py-2 w-full max-w-[240px] justify-center">
+                      <input
+                        type="checkbox"
+                        id="useNewsSearchCheckbox"
+                        checked={useNewsSearch}
+                        onChange={(e) => setUseNewsSearch(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded text-teal bg-slate-950 border-slate-850 focus:ring-teal cursor-pointer"
+                      />
+                      <label htmlFor="useNewsSearchCheckbox" className="text-[10px] font-bold text-slate-300 cursor-pointer select-none">
+                        Review Catalyst & Berita
+                      </label>
+                    </div>
+                    <button
+                      onClick={() => generateAiStrategy(selectedMetric)}
+                      disabled={isGeneratingAi}
+                      type="button"
+                      className="inline-flex items-center justify-center gap-1.5 text-xs font-bold secondary-button !py-2.5 px-4 bg-gradient-to-r from-cyan-500 to-blue-500 text-white rounded-xl shadow border-0 hover:brightness-110 disabled:opacity-50 w-full"
+                    >
                     {isGeneratingAi ? (
                       <>
                         <Loader2 size={12} className="animate-spin" />
@@ -762,6 +1242,7 @@ export function TradingScanner({ settings, theses, onThesesChange }: TradingScan
                       </>
                     )}
                   </button>
+                  </div>
                 ) : (
                   <p className="text-slate-500 text-xs font-bold leading-relaxed max-w-[200px] mx-auto bg-slate-900/30 p-2.5 rounded-xl border border-slate-850">
                     Analisis DeepSeek AI hanya dapat dijalankan pada saham dengan sinyal kuantitatif BUY.

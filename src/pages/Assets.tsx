@@ -721,15 +721,15 @@ export function Assets({
   return (
     <>
       <div className="grid gap-5">
-        <section className="hero-card flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div>
+        <section className="hero-card flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex-1 min-w-0 max-w-2xl">
             <p className="text-xs font-semibold uppercase tracking-wide text-teal">Asset allocation</p>
             <h2 className="section-title">Aset & Alokasi Target</h2>
             <p className="text-sm text-slate-500">
               Catat aset seperti RDPU, saham, deposito, dan hubungkan ke target yang sedang kamu kejar.
             </p>
           </div>
-          <div className="rounded-2xl bg-teal/10 px-4 py-3 text-sm font-bold text-navy">
+          <div className="rounded-2xl bg-teal/10 px-4 py-3 text-sm font-bold text-navy shrink-0">
             {computedAssets.length} aset tercatat
           </div>
         </section>

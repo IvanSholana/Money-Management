@@ -13,12 +13,13 @@ import { Targets } from "./pages/Targets";
 import { Thesis } from "./pages/Thesis";
 import { Transactions } from "./pages/Transactions";
 import { TradingScanner } from "./pages/TradingScanner";
+import { DividendMomentumScanner } from "./pages/DividendMomentumScanner";
 import { AppData, Transaction } from "./types";
 import { getMonthKey, todayJakarta } from "./utils/date";
 import { formatIDR } from "./utils/finance";
 import { loadData, loadDataFromDatabase, saveData, saveDataToDatabase } from "./utils/storage";
 
-type Page = "ai-landing" | "dashboard" | "transactions" | "monthly" | "pockets" | "assets" | "targets" | "thesis" | "scanner" | "settings";
+type Page = "ai-landing" | "dashboard" | "transactions" | "monthly" | "pockets" | "assets" | "targets" | "thesis" | "scanner" | "dividend-scanner" | "settings";
 
 export function App() {
   const [data, setData] = useState<AppData>(() => loadData());
@@ -385,6 +386,16 @@ export function App() {
 
           {page === "scanner" ? (
             <TradingScanner
+              settings={mergedData.settings}
+              theses={mergedData.theses}
+              onThesesChange={(theses) => {
+                setData((current) => ({ ...current, theses }));
+              }}
+            />
+          ) : null}
+
+          {page === "dividend-scanner" ? (
+            <DividendMomentumScanner
               settings={mergedData.settings}
               theses={mergedData.theses}
               onThesesChange={(theses) => {

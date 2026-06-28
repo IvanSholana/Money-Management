@@ -330,14 +330,14 @@ export function Targets({ assets, pockets, selectedMonth, targets, transactions,
         <motion.section 
           initial={{ opacity: 0, y: -15 }}
           animate={{ opacity: 1, y: 0 }}
-          className="hero-card flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"
+          className="hero-card flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"
         >
-          <div>
+          <div className="flex-1 min-w-0 max-w-2xl">
             <p className="text-xs font-black uppercase tracking-wider text-teal">Goal tracker</p>
             <h2 className="section-title text-xl font-black text-navy mt-0.5">Target Keinginan</h2>
             <p className="text-sm text-slate-500 mt-1">Catat hal yang ingin kamu capai dan pantau progress terkumpulnya.</p>
           </div>
-          <div className="rounded-2xl bg-teal/10 border border-teal/20 px-4 py-3 text-sm font-bold text-navy shadow-inner backdrop-blur">
+          <div className="rounded-2xl bg-teal/10 border border-teal/20 px-4 py-3 text-sm font-bold text-navy shadow-inner backdrop-blur shrink-0">
             Progress total: <span className="text-teal text-base font-black ml-1">{summary.overallProgress}%</span>
           </div>
         </motion.section>

@@ -169,6 +169,7 @@ export function MonthlyReport({
           onEdit={onEditTransaction}
           onFilterChange={() => undefined}
           showFilters={false}
+          scrollable
           transactions={monthlyTransactions}
         />
       </motion.div>

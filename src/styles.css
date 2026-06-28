@@ -74,6 +74,7 @@
       radial-gradient(circle at top right, rgba(245, 158, 11, 0.14), transparent 28rem),
       linear-gradient(180deg, #f8fbfd 0%, #eef4f8 46%, #f8fafc 100%);
     min-height: 100vh;
+    overflow-x: hidden;
   }
 
   input,
@@ -240,7 +241,7 @@
 
   /* ── App Shell ── */
   .app-shell {
-    @apply min-h-screen text-ink;
+    @apply min-h-screen text-ink w-full max-w-full overflow-x-hidden;
   }
 
   .app-header {
@@ -279,7 +280,7 @@
   }
 
   .nav-tray {
-    @apply relative flex gap-2 overflow-x-auto rounded-2xl bg-black/[0.16] p-1.5 backdrop-blur;
+    @apply relative flex w-full max-w-full gap-2 overflow-x-auto rounded-2xl bg-black/[0.16] p-1.5 backdrop-blur;
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.10),
       0 10px 28px rgba(0, 0, 0, 0.10);
